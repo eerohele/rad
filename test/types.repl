@@ -1,0 +1,12 @@
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+
+(def redis (rad/client :decode rad/bytes->str))
+(xr/on-exit redis)
+
+;; https://redis.io/docs/latest/develop/interact/programmability/lua-api/#lua-to-resp3-type-conversion
+@(redis [:EVAL "return { double = tonumber(ARGV[1]) }" 0 1e0])
+(assert #(= 1.0 *1))
+
+@(redis [:EVAL "return { true, false, 1, 2, 3.3333, somekey = 'somevalue', 'foo', nil , 'bar' }" 0])
+(assert #(= [1 nil 1 2 3 "foo"] *1))

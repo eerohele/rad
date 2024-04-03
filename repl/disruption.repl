@@ -1,0 +1,67 @@
+(set! *warn-on-reflection* true)
+
+(import '(java.util.concurrent ArrayBlockingQueue BlockingQueue CountDownLatch Executors ExecutorService Future ScheduledExecutorService TimeUnit))
+
+(def n 100)
+(def ^CountDownLatch latch (CountDownLatch. 1))
+(def ^BlockingQueue q (ArrayBlockingQueue. n))
+
+(require '[rad.api :as rad])
+(require '[cognitect.transcriptor :as xr])
+
+(def redis (rad/client :decode rad/bytes->str))
+(xr/on-exit redis)
+
+(def disruptor (rad/client :decode rad/bytes->str))
+(xr/on-exit disruptor)
+
+(def ^ExecutorService executor (Executors/newVirtualThreadPerTaskExecutor))
+(xr/on-exit #(.shutdown executor))
+
+(def ^ScheduledExecutorService scheduled-executor (Executors/newSingleThreadScheduledExecutor))
+(xr/on-exit #(.shutdownNow scheduled-executor))
+
+(def ^Future scheduled-future
+  ;; Suspend all clients at random intervals to introduce uncertainty.
+  (.scheduleWithFixedDelay scheduled-executor
+    (fn []
+      (disruptor [:CLIENT :PAUSE (rand-int 5)]))
+    50 50 TimeUnit/MILLISECONDS))
+
+(xr/on-exit #(.cancel scheduled-future true))
+
+;; Subscribe to a channel.
+(redis [:SUBSCRIBE "channel-1"])
+
+;; Ensure that every thread gets a response to the request *it* made, instead
+;; of getting the response to another thread's request.
+(dotimes [_ n]
+  (.execute ^ExecutorService executor
+    (fn []
+      (let [uuid (str (random-uuid))]
+        (.countDown latch)
+        (.await latch)
+        ;; Randomly publish messages to the channel we subscribed to earlier to
+        ;; add further disruption.
+        (when (> (rand) 0.5) (redis [:PUBLISH "channel-1" uuid]))
+        ;; Sleep for a short while to induce uncertainty.
+        (redis [:BLPOP (str "rad:test:" (random-uuid)) (/ (rand) 10)])
+        (when (> (rand) 0.5) (redis [:PUBLISH "channel-1" uuid]))
+        (.put q [uuid (redis [:PING uuid])])))))
+
+(dotimes [_ n]
+  (let [[expected-uuid ret] (.take q)
+        actual-uuid @ret]
+    (assert (= expected-uuid actual-uuid)
+      (format "(not= %s %s)" expected-uuid actual-uuid))))
+
+;; Shut down the disruptor.
+(.cancel scheduled-future true)
+(.shutdownNow scheduled-executor)
+
+;; If we don't unsubscribe here, during the tests that follow, Redis aborts
+;; with an error like this:
+;;
+;;     scheduled to be closed ASAP for overcoming of output buffer limits.
+@(redis [:UNSUBSCRIBE])
+@(redis [:FLUSHDB])

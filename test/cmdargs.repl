@@ -1,0 +1,50 @@
+(set! *warn-on-reflection* true)
+
+(require '[clojure.spec.alpha :as spec])
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+(require '[rad.resp :as resp])
+
+(spec/check-asserts true)
+
+(def R1 (rad/client :decode rad/bytes->str)) #_(R1)
+(xr/on-exit R1)
+
+;; Command translation.
+(defn echoes-to
+  [input output]
+  (assert (= output @(R1 [:ECHO input]))))
+
+(echoes-to "string" "string")
+(echoes-to :keyword "keyword")
+(echoes-to 'symbol "symbol")
+(echoes-to 123 "123")
+(echoes-to (int 123) "123")
+(echoes-to (biginteger 123) "123")
+(echoes-to 123N "123")
+(echoes-to (short 32767) "32767")
+(echoes-to (byte 127) "127")
+(echoes-to 1.23 "1.23")
+(echoes-to (float 1.23) "1.23")
+
+;; No decoding to UTF-8 strings
+(def R2 (rad/client)) #_(R2)
+(xr/on-exit R2)
+
+(import '(java.util Arrays))
+
+(def bs (byte-array [0xCA 0xFE 0xBA 0xBE]))
+(assert (= (resp/bytes->str bs) @(R1 [:ECHO bs])))
+
+;; With :decode identity, round-tripping byte arrays works.
+@(R2 [:ECHO bs])
+(assert (Arrays/equals ^bytes bs ^bytes *1))
+@(R2 [:SET "rad:test:key" bs])
+@(R2 [:GET "rad:test:key"])
+(assert (Arrays/equals ^bytes bs ^bytes *1))
+@(R2 [:DEL "rad:test:key"])
+
+;; Byte array keys.
+@(R2 [:SET (byte-array [0xCA 0xFE]) "babe"])
+@(R2 [:GET (byte-array [0xCA 0xFE])])
+(assert (Arrays/equals ^bytes *1 ^bytes (.getBytes "babe" "UTF-8")))

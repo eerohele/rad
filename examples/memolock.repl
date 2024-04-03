@@ -1,0 +1,138 @@
+(set! *warn-on-reflection* true)
+
+(require '[clojure.repl.deps :as deps])
+
+(binding [*repl* true]
+  (deps/add-libs '{org.clojure/data.json {:mvn/version "2.5.0"}}))
+
+(require '[clojure.data.json :as json])
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+
+(def redis (rad/client)) #_(redis)
+(xr/on-exit #(deref (redis [:FLUSHDB])))
+(xr/on-exit redis)
+
+@(redis [:FLUSHDB])
+
+;; Simulate a process that takes a while to produce an array of JSON bytes.
+(defn procure-value
+  [id _]
+  (Thread/sleep 3000)
+  (->
+    {:id id
+     :data [:...]}
+    (json/write-str)
+    (.getBytes "UTF-8")))
+
+(import '(java.time Duration))
+
+(require '[clojure.java.io :as io])
+
+;; A helper function for reading JSON from a byte array.
+(defn read-json
+  [bs]
+  (when bs
+    (with-open [reader (io/reader bs)]
+      (json/read reader))))
+
+(defonce retrievals (atom 0))
+
+(defn cache-miss
+  [cache-key {:keys [^Duration lock-timeout ^Duration timeout]}]
+  ;; Derive a lock key name and a channel name from the cache key.
+  (let [lock-key (format "lock:%s" cache-key)
+        channel (format "channel:%s" cache-key)]
+    ;; Attempt to acquire a lock. Use the NX option to ensure that we get the
+    ;; lock iff no one else has already acquired it. Use EX to avoid
+    ;; creating a lock with an infinite lifetime.
+    (if (= "OK" @(redis [:SET lock-key "" :NX :EX (.toSeconds lock-timeout)]))
+      (try
+        ;; Increment the counter that indicates how many times we had to
+        ;; procure the upstream resource.
+        (swap! retrievals inc)
+
+        ;; If we acquired the lock, we're responsible for procuring the value
+        ;; and updating the cache.
+        (let [^bytes ret (procure-value cache-key {:timeout timeout})]
+          ;; Once we've procured the value, send the new value to all
+          ;; subscribers and update the cache.
+          @(redis
+             [:PUBLISH channel ret]
+             [:SET cache-key ret :EX 10])
+
+          ;; Return the new value.
+          (read-json ret))
+        (finally
+          ;; Once we're done procuring the value and notifying subscribers,
+          ;; release the lock. If we don't release the lock, other
+          ;; parties might end up waiting on the subscription queue
+          ;; unnecessarily.
+          @(redis [:DEL lock-key])))
+      ;; If we didn't find the value in the cache and we didn't acquire the
+      ;; lock, another party is currently procuring the value. If so,
+      ;; subscribe to the channel that will receive the notification once
+      ;; the new value is available.
+      (try
+        (let [p (promise)
+              cb (fn [event] (deliver p (-> event :data peek read-json)))
+              _ @(redis ^{:cb cb} [:SUBSCRIBE channel])
+              ;; The timeout for waiting for the new value to appear in the
+              ;; channel is the same as the timeout for procuring the value.
+              ret (deref p (.toMillis timeout) ::timeout)]
+          ;; If this client didn't receive a notification from the client
+          ;; responsible for procuring the value in time, throw an error.
+          (if (identical? ret ::timeout)
+            (throw (ex-info "Boom!" {}))
+            ret))
+        (finally
+          ;; Once we're done, unsubscribe from the channel.
+          @(redis [:UNSUBSCRIBE channel]))))))
+
+(defn cache-hit
+  [id]
+  (some-> (redis [:GET id]) deref read-json))
+
+(defn through-cache
+  ([id]
+   (through-cache id {:timeout (Duration/ofSeconds 5)
+                      :lock-timeout (Duration/ofSeconds 30)}))
+  ([id opts]
+   (or (cache-hit id) (cache-miss id opts))))
+
+(defonce id (str (random-uuid)))
+
+(through-cache id)
+(through-cache id)
+(through-cache id)
+
+(import (java.util.concurrent CountDownLatch Executors ExecutorService))
+
+(def baseline (through-cache id))
+
+(time
+  (do
+    (reset! retrievals 0)
+
+    @(redis [:DEL id])
+
+    (def n 1000)
+    (def executor (Executors/newVirtualThreadPerTaskExecutor))
+    (def ^CountDownLatch latch (CountDownLatch. n))
+
+    (def futures
+      (doall
+        (map (fn [_]
+               (.submit
+                 ^ExecutorService executor
+                 ^Callable (^:once fn* []
+                            (.countDown ^CountDownLatch latch)
+                            (.await ^CountDownLatch latch)
+                            (through-cache id))))
+          (range n))))
+
+    (assert (every? #(= baseline %)
+              (mapv #(.get ^java.util.concurrent.Future %)
+                futures)))))
+
+(assert (= 1 @retrievals))

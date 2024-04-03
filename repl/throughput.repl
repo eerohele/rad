@@ -1,0 +1,147 @@
+;; Benchmarks that measure the throughput of different JVM Redis clients.
+
+(set! *assert* false)
+(set! *warn-on-reflection* true)
+(set! *print-length* nil)
+(set! *print-level* nil)
+
+(import '(java.lang AutoCloseable))
+
+;; Deps
+(require '[clojure.repl.deps :as deps])
+
+(binding [*repl* true]
+  (deps/add-libs '{criterium/criterium {:mvn/version "0.4.6"}
+                   redis.clients/jedis {:mvn/version "5.1.2"}
+                   io.lettuce/lettuce-core {:mvn/version "6.3.2.RELEASE"}
+                   com.taoensso/carmine {:mvn/version "3.3.2"}
+                   org.apache.commons/commons-pool2 {:mvn/version "2.12.0"}}))
+
+(require '[cognitect.transcriptor :as xr])
+(require '[criterium.core :refer [quick-bench]])
+
+;; Rad
+(require '[rad.api :as rad])
+(def redis (rad/client)) #_(redis)
+(xr/on-exit redis)
+
+;; Carmine
+(require '[taoensso.carmine :as car :refer [wcar]])
+(require '[taoensso.carmine.connections :as car-conn])
+
+(defonce my-pool (car-conn/conn-pool :mem/fresh {}))
+(xr/on-exit #(.close ^AutoCloseable my-pool))
+
+;; Jedis
+(import '(redis.clients.jedis DefaultJedisClientConfig HostAndPort JedisPooled JedisPoolConfig Pipeline))
+(def jedis-client-config (.. (DefaultJedisClientConfig/builder) (resp3) (build)))
+(def jedis-node (HostAndPort. "localhost" 6379))
+(def jedis-pool-config (JedisPoolConfig.))
+(def ^JedisPooled jedis-pool (JedisPooled. ^HostAndPort jedis-node ^DefaultJedisClientConfig jedis-client-config ^JedisPoolConfig jedis-pool-config))
+(xr/on-exit #(.close ^AutoCloseable jedis-pool))
+
+;; Lettuce
+(import '(io.lettuce.core ClientOptions RedisClient))
+(import '(io.lettuce.core.api StatefulRedisConnection))
+(import '(io.lettuce.core.api.sync RedisCommands))
+(import '(io.lettuce.core.protocol ProtocolVersion))
+
+(def lettuce-client
+  (doto (RedisClient/create "redis://localhost:6379")
+    (.setOptions (..
+                   (ClientOptions/builder)
+                   (protocolVersion ProtocolVersion/RESP3)
+                   (build)))))
+
+(def ^StatefulRedisConnection lettuce-connection (.connect ^RedisClient lettuce-client))
+(def ^RedisCommands lettuce-cmd (.sync lettuce-connection))
+
+(xr/on-exit
+  (fn []
+    (.close ^AutoCloseable lettuce-connection)
+    (.shutdown ^RedisClient lettuce-client)))
+
+;; Bench key & value
+@(def k (format "rad:benchmark:%s" (random-uuid)))
+@(def v (apply str (repeatedly 100 #(char (+ 97 (rand-int (- 123 97)))))))
+
+(import '(java.util.concurrent CompletableFuture))
+
+;; ╔════════════╗
+;; ║ SEQUENTIAL ║
+;; ╚════════════╝
+
+"Rad"
+(quick-bench
+  (.join ^CompletableFuture
+    (redis
+      [:DEL k]
+      [:SET k v]
+      [:GET k])))
+
+(quick-bench
+  @(redis [:COMMAND :DOCS]))
+
+"Carmine"
+(quick-bench
+  (wcar {:pool my-pool}
+    (car/del k)
+    (car/set k v)
+    (car/get k)))
+
+(quick-bench
+  (wcar {:pool my-pool}
+    (car/command :docs)))
+
+"Jedis"
+(quick-bench
+  (with-open [^Pipeline pipeline (.pipelined jedis-pool)]
+    (.del pipeline ^String k)
+    (.set pipeline ^String k ^String v)
+    (.get pipeline ^String k)
+    (.syncAndReturnAll pipeline)))
+
+"Lettuce"
+(quick-bench
+  (do
+    #_(.setAutoFlushCommands lettuce-connection false)
+    (.del lettuce-cmd (into-array String [k]))
+    (.set lettuce-cmd k v)
+    (.get lettuce-cmd k)
+    #_(.flushCommands lettuce-connection)))
+
+;; ╔════════════╗
+;; ║ CONCURRENT ║
+;; ╚════════════╝
+
+(require '[rad.dev.test :refer [concurrently]])
+
+"Rad (single connection)"
+(quick-bench
+  (concurrently {}
+    @(redis [:DEL k] [:SET k v] [:GET k])))
+
+"Carmine (connection pool)"
+(quick-bench
+  (concurrently {}
+    (wcar {:pool my-pool}
+      (car/del k)
+      (car/set k v)
+      (car/get k))))
+
+"Jedis (connection pool)"
+(quick-bench
+  (concurrently {}
+    (with-open [^Pipeline pipeline (.pipelined jedis-pool)]
+      (.del pipeline ^String k)
+      (.set pipeline ^String k ^String v)
+      (.get pipeline ^String k)
+      (.syncAndReturnAll pipeline))))
+
+"Lettuce (single connection)"
+(quick-bench
+  (concurrently {}
+    (do
+      (.del lettuce-cmd (into-array String [k]))
+      (.set lettuce-cmd k v)
+      (.get lettuce-cmd k))))

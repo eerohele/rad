@@ -1,0 +1,24 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+
+;; Blocking operations
+
+(def R1 (rad/client :decode rad/bytes->str)) #_(R1)
+(xr/on-exit R1)
+
+(def blpop
+  (R1 [:BLPOP "xs" 0]))
+
+(deref blpop 1000 ::timeout)
+(xr/check! (partial identical? ::timeout))
+
+(def R2 (rad/client)) #_(R2)
+(xr/on-exit R2)
+
+@(R2 [:RPUSH "xs" "a"])
+(assert (= 1 *1))
+
+(deref blpop 1000 ::timeout)
+(assert (= ["xs" "a"] *1))

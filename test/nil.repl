@@ -1,0 +1,10 @@
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+
+(def redis (rad/client)) #_(redis)
+(xr/on-exit redis)
+
+@(redis [:FLUSHDB])
+
+@(redis [:GET "none"])
+(xr/check! nil?)

@@ -1,0 +1,49 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.anomalies :as-alias anomalies])
+(require '[rad.dev.test :refer [ret-ex]])
+(require '[rad.impl.anomaly :refer [anomaly!]])
+(require '[rad.impl.resilience :refer [with-retry]])
+
+(import '(java.time Duration))
+
+(with-retry {:max-retries 1} (inc 1))
+(assert #(= 2 *1))
+
+(ret-ex (with-retry {:max-retries 0} (inc 1)))
+(ex-message *1)
+(assert (= ":max-retries must be >= 1" *1))
+
+(ret-ex (with-retry {:base-delay-ms -1} (inc 1)))
+(ex-message *1)
+(assert (= ":base-delay-ms must be >= 0" *1))
+
+(ret-ex (with-retry {:cap-ms -1} (inc 1)))
+(ex-message *1)
+(assert (= ":cap-ms must be >= 0" *1))
+
+(defn succeed-after
+  "Given a java.time.Duration, return a function that throws an exception until
+  the duration has expired, after which it returns :succeed."
+  [^Duration duration]
+  (let [start-ms (System/currentTimeMillis)]
+    (fn []
+      (let [elapsed-ms (Duration/ofMillis (- (System/currentTimeMillis) start-ms))]
+        (if (neg? (.compareTo duration elapsed-ms))
+          :success
+          (anomaly! "FAIL" ::anomalies/unavailable))))))
+
+(let [f (succeed-after (Duration/ofMillis 10000))]
+  (ret-ex
+    (with-retry {:max-retries 5}
+      (f))))
+
+(ex-message *1)
+(assert (= "FAIL" *1))
+
+(let [f (succeed-after (Duration/ofMillis 10000))]
+  (ret-ex
+    (with-retry {:max-retries 20}
+      (f))))
+
+(assert (= :success *1))

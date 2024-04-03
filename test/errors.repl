@@ -1,0 +1,16 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+(require '[rad.dev.test :refer [ret-ex]])
+
+(def redis (rad/client :decode rad/bytes->str)) #_(redis)
+(xr/on-exit redis)
+
+;; Smoke test
+@(redis [:PING])
+(assert (= "PONG" *1))
+
+(ret-ex @(redis [:PUBLISH]))
+(-> *1 ex-message)
+(xr/check! (partial re-matches #"^ERR wrong number of arguments for 'publish' command$"))

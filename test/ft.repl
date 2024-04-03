@@ -1,0 +1,38 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[clojure.repl.deps :as deps])
+
+(binding [*repl* true]
+  (deps/add-libs '{org.clojure/data.json {:mvn/version "2.5.0"}}))
+
+(require '[clojure.data.json :as json])
+(require '[rad.api :as rad])
+
+(def redis (rad/client :decode rad/bytes->str)) #_(redis)
+(xr/on-exit redis)
+
+(def json
+  (json/write-str
+    [{:arr [1 2 3]}
+     {:val "hello"}
+     {:val "world"}]))
+
+@(redis [:JSON.SET "doc:1" :$ json])
+
+@(redis [:FT.CREATE :idx
+         :ON :JSON
+         :PREFIX 1 "doc:"
+         :SCHEMA "$..arr"
+         :AS "arr"
+         :NUMERIC "$..val"
+         :AS "val" :TEXT])
+
+@(redis [:FT.SEARCH :idx :* :RETURN 2 "arr" "val"])
+
+(assert (= {"format" "STRING"
+            "warning" []
+            "attributes" []
+            "results" [{"extra_attributes" {"arr" "[1,2,3]" "val" "hello"} "id" "doc:1" "values" []}]
+            "total_results" 1}
+          *1))

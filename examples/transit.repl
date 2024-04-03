@@ -1,0 +1,43 @@
+;; An example of how to use Rad with Transit.
+(import '(java.io ByteArrayInputStream ByteArrayOutputStream))
+
+(require '[clojure.spec.alpha :as spec])
+(require '[clojure.repl.deps :as deps])
+
+(spec/check-asserts true)
+
+;; Presuming Clojure 1.12 or newer.
+(deps/add-lib 'com.cognitect/transit-clj)
+(require '[cognitect.transit :as transit])
+
+;; Decode a byte array of Transit data.
+(defn decode
+  [ba]
+  (with-open [in (ByteArrayInputStream. ba)]
+    (let [reader (transit/reader in :msgpack)]
+      (transit/read reader))))
+
+;; Encode a value as Transit and write it into a byte array.
+(defn encode
+  [x]
+  (with-open [out (ByteArrayOutputStream.)]
+    (let [writer (transit/writer out :msgpack)]
+      (transit/write writer x)
+      (.toByteArray out))))
+
+;; Try round-tripping to make sure everything works OK.
+(-> {:a 1} encode decode)
+(assert (= *1 {:a 1}))
+
+;; Make a Redis client.
+(require '[rad.api :as rad])
+(def redis (rad/client))
+
+;; Set "a" to a Transit-encoded value.
+@(redis [:SET "a" (encode {:b 2})])
+
+;; Decode the Transit-encoded value in "a".
+(decode @(redis [:GET "a"]))
+
+;; Check that it's what we expected.
+(assert (= *1 {:b 2}))

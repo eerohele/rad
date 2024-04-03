@@ -1,0 +1,133 @@
+;; This example assumes a Redis server listening on localhost:6379.
+(require '[rad.api :as rad])
+
+;; Start Rad.
+(def redis (rad/client)) #_(redis)
+
+;; Subscribe to a Redis pub/sub channel.
+@(redis [:SUBSCRIBE "channel-1"])
+
+;; Publish a message into the channel.
+@(redis [:PUBLISH "channel-1" "M1"])
+(assert (= 1 *1))
+
+;; If you subscribe to a channel without specifying a callback function, Redis
+;; sends Rad the message. But Rad doesn't know what to do with the message, so
+;; it just discards it.
+;;
+;; Let's attach a callback function to the subscription so Rad can do something
+;; useful with each message it gets.
+
+;; Let's first make a promise that we put the first message we get into.
+(def p1 (promise))
+
+;; Then, let's make a callback function that delivers the value it gets into
+;; the promise.
+;;
+;; We'll make the callback multimethod that dispatches on the type of the Redis
+;; push event it receives as an argument.
+;;
+;; This way, we can easily ignore other kinds of push events (such as the
+;; subscription confirmation messages Redis sends every time a client
+;; subscribes to a channel).
+(defmulti cb1 :type)
+
+(defmethod cb1 "message"
+  [event]
+  (deliver p1 event))
+
+(defmethod cb1 :default [_])
+
+;; Attach the callback function to the subscription.
+(rad/attach-callback redis cb1 "channel-1")
+
+;; Publish another message into the channel.
+@(redis [:PUBLISH "channel-1" "M1"])
+
+;; Check the value of the promise.
+;;
+;; This should return something like this:
+;;
+;;     #rad.resp.PushEvent{:type "message" :data ["channel-1" ...]}
+;;
+;; Where ... refers to the printed representation of the byte array Redis sent
+;; us. The byte array contains the bytes of the UTF-8 string "M1" -- the
+;; payload of the message we published.
+(deref p1 1000 ::timeout)
+
+;; You can also use metadata to specify a callback function when subscribing to
+;; a channel.
+;;
+;; To try that, let's first unsubscribe from "channel-1".
+;;
+;; Unsubscribing both sends the unsubscribe command to the Redis server and
+;; tells Rad to detach all callback functions from the channel.
+@(redis [:UNSUBSCRIBE "channel-1"])
+
+;; Then, let's resubscribe to it. Because we've already delivered a value to
+;; the first promise, we need to make a new one.
+(def p2 (promise))
+
+;; We also need a new callback.
+(defmulti cb2 :type)
+
+(defmethod cb2 "message"
+  [event]
+  (deliver p2 event))
+
+(defmethod cb2 :default [_])
+
+;; Let's subscribe to a channel and use metadata to tell Rad to call our new
+;; callback function, cb2, with each message it receives.
+@(redis ^{:cb cb2} [:SUBSCRIBE "channel-1"])
+
+;; Publish another message into the channel.
+@(redis [:PUBLISH "channel-1" "Hello, world!"])
+
+;; Check the value of the promise. This should return the message we just
+;; published into channel-1.
+(deref p2 1000 ::timeout)
+
+;; The downside with promises is that they can only contain one value. To
+;; handle multiple values, we can use a concurrent blocking queue.
+
+(import '(java.util.concurrent ArrayBlockingQueue BlockingQueue TimeUnit))
+
+;; Make a queue.
+;;
+;; Note that if this queue is full, puts into the queue will block. So if you
+;; decide to go with queues, make sure to choose a backpressure strategy that
+;; fits your use case: for example, use .offer with a timeout to drop newest
+;; values if the queue is full.
+;;
+;; Make sure to check out the different kinds of queues in the
+;; java.util.concurrent package to see which one best fits your use case.
+;;
+;; (You definitely want the type hint here.)
+(def ^BlockingQueue q3 (ArrayBlockingQueue. 128))
+
+;; Make a callback function. This time we'll use a plain old function with a
+;; case statement, just for variety.
+(defn cb3
+  [event]
+  (case (:type event)
+    "message" (.put q3 event)
+    nil))
+
+;; Attach our new callback to the Redis channel.
+(rad/attach-callback redis cb3 "channel-1")
+
+;; Publish a message into the queue.
+@(redis [:PUBLISH "channel-1" "Now you see me."])
+
+;; Wait for a second for a message to appear in the queue.
+(.poll q3 1 TimeUnit/SECONDS)
+
+;; Finally, let's use :UNSUBSCRIBE to unsubscribe from channel-1.
+@(redis [:UNSUBSCRIBE "channel-1"])
+
+;; Publish another message into the channel...
+@(redis [:PUBLISH "channel-1" "Now you don't."])
+
+;; ..and make sure it doesn't appear in the queue.
+(.poll q3 1 TimeUnit/SECONDS)

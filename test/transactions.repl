@@ -1,0 +1,31 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+
+(def redis (rad/client :decode rad/bytes->str)) #_(redis)
+(xr/on-exit redis)
+
+;; Transactions
+
+@(redis [:FLUSHDB])
+
+@(redis
+   [:MULTI]
+   [:INCR "foo"]
+   [:INCR "bar"]
+   [:EXEC])
+
+(assert (= ["OK" "QUEUED" "QUEUED" [1 1]] *1))
+
+@(redis [:GET "foo"] [:GET "bar"])
+
+(assert (= ["1" "1"] *1))
+
+@(redis [:SET "foo" 1])
+@(redis [:MULTI])
+@(redis [:INCR "foo"])
+@(redis [:DISCARD])
+@(redis [:GET "foo"])
+
+(assert (= "1" *1))

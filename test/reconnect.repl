@@ -1,0 +1,108 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.dev.proxy :as proxy])
+(require '[rad.api :as rad])
+(require '[rad.log :as log])
+
+(log/console-logging! :level :finest)
+
+;; Start a proxy that relays all traffic to and from Redis
+(def tcp-proxy (proxy/run "localhost" 6379)) #_(tcp-proxy)
+(xr/on-exit tcp-proxy)
+
+;; Connect to Redis through proxy
+(def redis (rad/client :host "localhost" :port 9736 :decode rad/bytes->str)) #_(redis)
+(xr/on-exit redis)
+
+;; Smoke test
+@(redis [:PING])
+(assert (= "PONG" *1))
+
+;; Close proxy to simulate a disconnection
+(tcp-proxy)
+
+;; Make request
+(def ping (redis [:PING]))
+
+;; Check that the proxy is actually closed
+(deref ping 1000 ::timeout)
+(assert (identical? ::timeout *1))
+
+;; Restart proxy
+#_{:clj-kondo/ignore [:redefined-var]}
+(def tcp-proxy (proxy/run "localhost" 6379))
+(xr/on-exit tcp-proxy)
+
+;; Assert that request gets the correct response
+(deref ping 15000 ::timeout)
+(assert (= "PONG" *1))
+
+;; Try reconnecting also on connect if server isn't up yet
+(tcp-proxy)
+
+(def delayed-redis (delay (rad/client :host "localhost" :port 9736 :decode rad/bytes->str))) #_(redis)
+(xr/on-exit #(@delayed-redis))
+
+(Thread/sleep 1000)
+
+#_{:clj-kondo/ignore [:redefined-var]}
+(def tcp-proxy (proxy/run "localhost" 6379))
+(xr/on-exit tcp-proxy)
+
+;; Connection is established
+@(@delayed-redis [:PING])
+(assert (= "PONG" *1))
+
+(@delayed-redis)
+
+;; Issue multiple mutating commands when connection severed
+
+(tcp-proxy)
+
+(Thread/sleep ^long (rand-int 100))
+(redis [:SET "foo" "bar"])
+
+(Thread/sleep ^long (rand-int 100))
+(redis [:SET "baz" "qux"])
+
+(Thread/sleep ^long (rand-int 100))
+(redis [:SET "quux" "corge"])
+
+(Thread/sleep ^long (rand-int 100))
+
+#_{:clj-kondo/ignore [:redefined-var]}
+(def tcp-proxy (proxy/run "localhost" 6379))
+(xr/on-exit tcp-proxy)
+
+@(redis [:GET "foo"] [:GET "baz"] [:GET "quux"])
+(assert (= ["bar" "qux" "corge"] *1))
+
+(import '(java.util.concurrent ArrayBlockingQueue BlockingQueue))
+
+(def n 128)
+
+(def ^BlockingQueue q (ArrayBlockingQueue. n))
+
+;; Store expected value
+@(def expected-ret @(redis [:PING]))
+
+;; Close the proxy
+(tcp-proxy)
+
+;; Issue n commands while the proxy is closed
+(dotimes [_ n]
+  (.put q (redis [:PING])))
+
+;; Restart the proxy
+#_{:clj-kondo/ignore [:redefined-var]}
+(def tcp-proxy (proxy/run "localhost" 6379)) #_(tcp-proxy)
+(xr/on-exit tcp-proxy)
+
+(require '[clojure.data :as data])
+
+;; Check that each of the n requests receive the expected response
+(dotimes [_ n]
+  (let [ret (deref (.take q) 15000 ::timeout)]
+    (assert (= expected-ret ret)
+      (data/diff expected-ret ret))))

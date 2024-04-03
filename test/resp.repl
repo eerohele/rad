@@ -1,0 +1,254 @@
+(refer-clojure :exclude [read])
+
+(require '[clojure.spec.alpha :as spec])
+(require '[clojure.test.check :as test.check])
+(require '[clojure.test.check.generators :as gen])
+(require '[clojure.test.check.properties :as prop])
+
+(require '[cognitect.transcriptor :as xr])
+
+(require '[rad.resp :as resp])
+
+(import '(clojure.lang BigInt))
+
+(import '(java.io ByteArrayInputStream ByteArrayOutputStream))
+
+;; Predicates
+
+(defn bigint?
+  [x]
+  (instance? BigInt x))
+
+(defn pass?
+  [ret]
+  (:pass? ret))
+
+;; Simple types
+
+(spec/def ::null nil?)
+
+(spec/def ::double
+  ;; We don't want to generate NaN, because (= ##NaN ##NaN) is false.
+  ;;
+  ;; This makes property-based tests problematic, because e.g. two deeply
+  ;; nested maps with ##NaNs somewhere inside them are not equal.
+  (spec/with-gen double? #(gen/double* {:NaN? false})))
+
+(spec/def ::number int?)
+
+(spec/def ::boolean boolean?)
+
+;; Blob errors parse the same as blob strings. We don't want to generate them
+;; for round-trip tests, though, because we can't compare instances of
+;; java.lang.Exception for equality.
+
+;; Redis clients don't send the Redis server simple strings, only blob strings.
+;;
+;; Therefore, even though blob strings are really closer to byte arrays than
+;; strings, we don't want to require users to encode every string they send
+;; into bytes.
+(spec/def ::blob-string string?)
+
+;; Making a SimpleString marker type doesn't seem useful, so we just ignore
+;; them for round-tripping tests for now.
+
+(spec/def ::verbatim-string
+  (spec/with-gen resp/verbatim-string?
+    (fn []
+      (gen/fmap (fn [[type data]] (resp/->VerbatimString type data))
+        (gen/tuple
+          ;; The first three bytes of a verbatim string signify the type of the
+          ;; string.
+          ;;
+          ;; The bytes don't need to be ASCII characters, but this is the
+          ;; easiest way of generating three random bytes that don't include
+          ;; reserved bytes (such as the carriage return or the line feed) that
+          ;; I could think of.
+          (gen/fmap (partial apply str) (gen/vector gen/char-ascii 3))
+          (spec/gen ::blob-string))))))
+
+(spec/def ::big-number
+  (spec/with-gen bigint? (fn [] gen/size-bounded-bigint)))
+
+;; Aggregate types
+
+(spec/def ::map
+  (spec/map-of ::type ::type :gen-max 3))
+
+(spec/def ::array
+  (spec/coll-of ::type :kind vector? :gen-max 4))
+
+(spec/def ::set
+  (spec/coll-of ::type :kind set? :gen-max 4))
+
+(spec/def ::attribute
+  (spec/with-gen
+    (spec/or :map ::map :array ::array :set ::set)
+    #(gen/fmap (fn [[m meta]] (with-meta m meta))
+       (gen/tuple
+         (spec/gen (spec/or :map ::map :array ::array :set ::set))
+         ;; I imagine RESP3 attribute maps can also have aggregate types as keys and
+         ;; values, that generates some pretty big keys and values, so we'll restrict
+         ;; ourselves to simple types here.
+         (spec/gen (spec/map-of ::simple-type ::simple-type :gen-max 1))))))
+
+(comment (gen/sample (spec/gen ::attribute)) ,,,)
+
+(spec/def ::push-event
+  (spec/with-gen resp/push-event?
+    #(gen/fmap (fn [[type data]] (resp/->PushEvent type data))
+       ;; TODO: Should these be `bytes?` instead?
+       (gen/tuple
+         (spec/gen ::blob-string)
+         (gen/vector (spec/gen ::blob-string) 1 8)))))
+
+(spec/def ::simple-type
+  (spec/or
+    :blob-string ::blob-string
+    :null ::null
+    :number ::number
+    :double ::double
+    :boolean ::boolean
+    :verbatim-string ::verbatim-string
+    :big-number ::big-number))
+
+(spec/def ::aggregate-type
+  (spec/or
+    :map ::map
+    :array ::array
+    :set ::set
+    :attribute ::attribute
+    :push-event ::push-event))
+
+(spec/def ::type
+  (spec/or
+    :simple-type ::simple-type
+    :aggregate-type ::aggregate-type))
+
+(comment (gen/generate (spec/gen ::type)) ,,,)
+
+(defn round-trip
+  [x]
+  (-> x resp/write-string resp/read-string))
+
+(round-trip nil)
+(round-trip 1.23)
+(round-trip 123)
+(round-trip false)
+(round-trip true)
+(round-trip "Hello, world!")
+(round-trip (resp/map->VerbatimString {:encoding "foo" :data "bar"}))
+(round-trip 123N)
+(round-trip {"a" 1})
+(round-trip ["a" 1])
+(round-trip #{"a" 1})
+
+;; We don't want to send the metadata of IMetas to Redis, but we do want to be
+;; able to read RESP3 attributes.
+#_(round-trip (with-meta {"a" 1} {"b" 2}))
+(meta (resp/read-string "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n" resp/bytes->str))
+
+(round-trip (resp/map->PushEvent {:type "foo" :data ["bar" "baz"]}))
+
+;; Round-tripping.
+(test.check/quick-check 1e5
+  (prop/for-all [x (spec/gen ::type)]
+    (= x (round-trip x))))
+
+(xr/check! pass?)
+
+(comment (-> *1 :shrunk :smallest first) ,,,)
+
+;; Can't compare NaN's using =, so we'll check them separately.
+(round-trip ##NaN)
+(xr/check! NaN?)
+
+(import '(java.util Arrays))
+
+(defn round-trip-bytes
+  ^bytes [x decode]
+  ;; Write bytes into RESP3.
+  (let [resp (with-open [out (ByteArrayOutputStream.)]
+               (resp/write x out)
+               (.toByteArray out))]
+    ;; Read object from RESP3 bytes.
+    (with-open [in (ByteArrayInputStream. resp)]
+      (resp/read in decode))))
+
+;; Round-tripping bytes.
+(test.check/quick-check 1e5
+  (prop/for-all [^bytes bs gen/bytes]
+    (Arrays/equals bs (round-trip-bytes bs identity))))
+
+(xr/check! pass?)
+
+(require '[clojure.string :as string])
+
+(defn remove-disallowed-characters
+  [s]
+  ;; Strings that gen/string generates can have carriage returns or newlines.
+  ;;
+  ;; Neither are allowed in simple strings or errors, so we'll strip them.
+  (string/replace s #"[\r\n]" ""))
+
+(def gen-simple-string
+  ;; I'm not sure generating only ASCII strings here is correct, but gen/string
+  ;; yields strings with Unicode control characters, which the implementation
+  ;; doesn't support at the time of writing this comment. It is unclear whether
+  ;; it's necessary to support them.
+  (gen/fmap remove-disallowed-characters gen/string-ascii))
+
+;; Equality comparison between Exception objects doesn't make sense, but we can
+;; check that round-tripping the exception does not alter the exception message.
+(test.check/quick-check 1e5
+  (prop/for-all [code (gen/fmap string/upper-case gen/string-ascii)
+                 msg gen-simple-string]
+    (let [ex (Exception. (format "%s %s" code msg))]
+      (= (ex-message ex) (ex-message (round-trip ex))))))
+
+(xr/check! pass?)
+
+;; Writing simple strings and errors doesn't seem very useful. So, until Rad
+;; doesn't know how to write them, we'll just check that reading them works.
+
+;; Simple strings.
+(test.check/quick-check 1e5
+  (prop/for-all [s gen-simple-string]
+    (= s (resp/read-string (format "+%s\r\n" s)))))
+
+(xr/check! pass?)
+
+;; Simple errors.
+(test.check/quick-check 1e5
+  (prop/for-all [code gen-simple-string
+                 msg gen-simple-string]
+    (let [ex (resp/read-string (format "-%s %s\r\n" code msg))]
+      (= (str code " " msg) (ex-message ex)))))
+
+(xr/check! pass?)
+
+;; Pub/Sub
+
+(defn equalize
+  [data]
+  (mapv (fn [x] (if (bytes? x) (vec x) x)) data))
+
+(doseq [event [(resp/->PushEvent "subscribe" ["channel-1" 1])
+               (resp/->PushEvent "unsubscribe" ["channel-1" 0])
+               (resp/->PushEvent "message" ["channel-1" (byte-array [(int \f) (int \o) (int \o)])])
+               (resp/->PushEvent "pmessage" ["channel-?"  "channel-1" (byte-array [(int \f) (int \o) (int \o)])])]]
+  (let [ret (round-trip-bytes event identity)]
+    (assert
+      (=
+        (update ret :data equalize)
+        (update event :data equalize)))))
+
+(doseq [event [(resp/->PushEvent "subscribe" ["channel-1" 1])
+               (resp/->PushEvent "unsubscribe" ["channel-1" 0])
+               (resp/->PushEvent "message" ["channel-1" "foo"])
+               (resp/->PushEvent "pmessage" ["channel-?"  "channel-1" "foo"])]]
+  (let [ret (round-trip-bytes event resp/bytes->str)]
+    (assert
+      (=
+        (update ret :data equalize)
+        (update event :data equalize)))))

@@ -1,0 +1,42 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Install JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Install Clojure CLI
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          cli: 1.11.1.1435
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            - ~/.m2/repository
+            - ~/.gitlibs
+          key: ${{ runner.os }}-deps-${{ hashFiles('deps.edn') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
+
+      - name: Start services
+        run: docker compose up --detach
+
+      - name: Run benchmarks
+        run: clojure -J-Dclojure.spec.compile-asserts=false -J-Dclojure.spec.check-asserts=false -X:dev user/transcribe '{:path "repl/throughput.repl"}'
+
+      - name: Stop services
+        run: docker compose down --volumes --remove-orphans

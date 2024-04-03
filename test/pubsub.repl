@@ -1,0 +1,410 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+(require '[rad.resp :refer [->PushEvent]])
+
+(import '(java.util.concurrent ArrayBlockingQueue BlockingQueue TimeUnit))
+
+(def redis (rad/client :decode rad/bytes->str)) #_(redis)
+(xr/on-exit redis)
+
+;; Test helpers
+(defn push-event
+  [type data]
+  (->PushEvent type data))
+
+(defn one?
+  [x]
+  (= 1 x))
+
+(defn poll
+  ([q]
+   (poll q 15))
+  ([^BlockingQueue q timeout-secs]
+   (.poll q timeout-secs TimeUnit/SECONDS)))
+
+;; Smoke test
+@(redis [:PING])
+(assert (= "PONG" *1))
+
+;; Make a queue to put pub/sub messages into.
+(def q1 (ArrayBlockingQueue. 256))
+
+;; Make a queue for things we don't really care about (confirmation messages).
+(def cq1 (ArrayBlockingQueue. 256))
+
+;; Make a callback function.
+;;
+;; Our callback function is a multimethod that dispatches on the :type of the
+;; Redis push event. We're only interested in pub/sub messages, so we'll ignore
+;; all other kinds of push events except ones that have the type "message".
+;;
+;; Rad will call this function every time it receives a message.
+(defmulti cb1 :type)
+
+(defmethod cb1 "message"
+  [event]
+  (.offer ^BlockingQueue q1 event))
+
+;; Ignore all other kinds of push events except pub/sub messages (e.g.
+;; subscription or unsubscription confirmations).
+(defmethod cb1 :default
+  [event]
+  (.offer ^BlockingQueue cq1 event))
+
+;; Subscribe to channel-1.
+;;
+;; Rad will call the callback function every time it receives a message someone
+;; published into the channel.
+@(redis ^{:cb cb1} [:SUBSCRIBE "channel-1"])
+
+;; Redis also sends us a message confirming that we've subscribed to a channel.
+(poll cq1)
+(assert (= *1 (push-event "subscribe" ["channel-1" 1])))
+
+;; Publish a message into channel-1.
+@(redis [:PUBLISH "channel-1" "M1"])
+(xr/check! one?)
+
+;; Poll the queue cb1 puts messages into for new messages.
+(poll q1)
+
+;; The published message appears in the queue.
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+;; The queue is now empty.
+(.size ^BlockingQueue q1)
+(xr/check! zero?)
+
+;; Make another queue-callback pair.
+(def ^BlockingQueue q2 (ArrayBlockingQueue. 256))
+(def ^BlockingQueue cq2 (ArrayBlockingQueue. 256))
+
+(defmulti cb2 :type)
+
+(defmethod cb2 "message"
+  [event]
+  (.offer q2 event))
+
+(defmethod cb2 :default
+  [event]
+  (.offer cq2 event))
+
+;; Attach the new callback to channel-1.
+(redis ^{:cb cb2} [:SUBSCRIBE "channel-1"])
+
+(poll cq2)
+(assert (= *1 (push-event "subscribe" ["channel-1" 1])))
+
+;; Publish a message into the channel.
+@(redis [:PUBLISH "channel-1" "M1"])
+(xr/check! one?)
+
+;; Message appears in both q1 and q2.
+(poll q1)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+(poll q2)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+;; Detach the first callback from channel-1.
+(rad/detach-callback redis cb1 "channel-1")
+
+;; Detaching a callback that's no longer attached is a no-op.
+(rad/detach-callback redis cb1 "channel-1")
+
+;; Publish a message into the channel.
+@(redis [:PUBLISH "channel-1" "M1"])
+(xr/check! one?)
+
+;; Message doesn't appear in q1, because cb1 was detached.
+(poll q1 1)
+(xr/check! nil?)
+
+;; Message does appear in q2, because cb2 remains attached.
+(poll q2)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+;; Reattach cb1 to channel-1.
+(rad/attach-callback redis cb1 "channel-1")
+
+;; Publish another message into the channel.
+@(redis [:PUBLISH "channel-1" "M1"])
+(xr/check! one?)
+
+;; The message appears in both channels.
+(poll q1)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+(poll q2)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+;; Attaching the same callback twice is a no-op.
+(rad/attach-callback redis cb1 "channel-1")
+
+;; Publish another message into the channel.
+@(redis [:PUBLISH "channel-1" "M1"])
+
+;; The message only appears in the queue once.
+(poll q1)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+(poll q1 1)
+(xr/check! nil?)
+
+;; The message appears in both queues.
+(poll q2)
+(assert (= *1 (push-event "message" ["channel-1" "M1"])))
+
+;; Unsubscribe (and detach all callbacks) from channel-1.
+@(redis [:UNSUBSCRIBE "channel-1"])
+
+(poll cq2)
+(assert (= *1 (push-event "unsubscribe" ["channel-1" 0])))
+
+;; Publish a message.
+@(redis [:PUBLISH "channel-1" "M1"])
+(xr/check! zero?)
+
+;; The message appears in neither q1 or q2.
+(poll q1 1)
+(xr/check! nil?)
+
+(poll q2 1)
+(xr/check! nil?)
+
+;; Unsubscribing from multiple channels.
+@(redis ^{:cb cb2} [:SUBSCRIBE "channel-1" "channel-2"])
+
+(def vs (atom #{}))
+
+(swap! vs conj (poll cq2))
+(swap! vs conj (poll cq2))
+
+(assert (= @vs #{(push-event "subscribe" ["channel-2" 2])
+                 (push-event "subscribe" ["channel-1" 1])}))
+
+@(redis [:UNSUBSCRIBE "channel-2" "channel-1"])
+
+#_{:clj-kondo/ignore [:redefined-var]}
+(def vs (atom #{}))
+
+(swap! vs conj (poll cq2))
+(swap! vs conj (poll cq2))
+
+(assert (= @vs #{(push-event "unsubscribe" ["channel-2" 1])
+                 (push-event "unsubscribe" ["channel-1" 0])}))
+
+;; Make a helper function that subscribes to any number of channels and puts
+;; all messages published into those channels into a (bounded) BlockingQueue.
+(defn subscribe
+  ^BlockingQueue [& channels]
+  (let [q (ArrayBlockingQueue. 256)
+        cb (fn [{:keys [type data]}]
+             (case type
+               "message" (.offer ^BlockingQueue q (peek data))
+               nil))
+        cmdvec (with-meta (into [:SUBSCRIBE] channels) {:cb cb})]
+    (redis cmdvec)
+    q))
+
+#_{:clj-kondo/ignore [:redefined-var]}
+(def q1* (subscribe "channel-1"))
+
+;; Publish a message into the channel.
+@(redis [:PUBLISH "channel-1" "Hello, world!"])
+(xr/check! one?)
+
+;; The message appears in the queue.
+(poll q1*)
+(assert (= "Hello, world!" *1))
+
+;; Publish to a different channel.
+@(redis [:PUBLISH "channel-2" "C2"])
+(xr/check! zero?) ; No one's listening on channel-2.
+
+;; Post another message to channel-1.
+(redis [:PUBLISH "channel-1" "C1"])
+
+;; The next message that appears in the queue is the one published into
+;; channel-1 (not channel-2).
+(poll q1*)
+(assert (= "C1" *1))
+
+;; Also subscribe to channel-2.
+#_{:clj-kondo/ignore [:redefined-var]}
+(def q2* (subscribe "channel-2"))
+
+;; Post two messages to both channel-1 and channel-2.
+;;
+;; Publish the messages synchronously one-by-one to ensure order.
+@(redis [:PUBLISH "channel-1" "C1-1"])
+@(redis [:PUBLISH "channel-2" "C2-1"])
+@(redis [:PUBLISH "channel-1" "C1-2"])
+@(redis [:PUBLISH "channel-2" "C2-2"])
+
+;; Both queues only receive the messages they're subscribed to.
+(poll q1*)
+(assert (= "C1-1" *1))
+
+(poll q1*)
+(assert (= "C1-2" *1))
+
+(poll q2*)
+(assert (= "C2-1" *1))
+
+(poll q2*)
+(assert (= "C2-2" *1))
+
+;; Subscribe to multiple queues.
+(def q3+4 (subscribe "channel-3" "channel-4"))
+
+;; :SUBSCRIBE yields a single response.
+@(redis [:PING])
+(assert (= "PONG" *1))
+
+;; Publish a message to each channel.
+@(redis [:PUBLISH "channel-3" "C3"])
+(xr/check! one?)
+
+@(redis [:PUBLISH "channel-4" "C4"])
+(xr/check! one?)
+
+(poll q3+4)
+(assert (= "C3" *1))
+
+(poll q3+4)
+(assert (= "C4" *1))
+
+;; Unsubscribe from each channel individually.
+@(redis [:UNSUBSCRIBE "channel-3"])
+@(redis [:PUBLISH "channel-3" "C3"])
+(xr/check! zero?)
+
+(poll q3+4 1)
+(xr/check! nil?)
+
+@(redis [:PUBLISH "channel-4" "C4"])
+(xr/check! one?)
+
+(poll q3+4)
+(assert (= "C4" *1))
+
+@(redis [:UNSUBSCRIBE "channel-4"])
+(poll q3+4 1)
+(xr/check! nil?)
+
+;; Unsubscribe from more than one channel.
+@(redis [:UNSUBSCRIBE "channel-1" "channel-2"])
+
+;; Publish to the channel we're no longer subscribed to.
+@(redis [:PUBLISH "channel-1" "C1"])
+(xr/check! zero?)
+
+;; No messages appear in either queue.
+(poll q1* 1)
+(xr/check! nil?)
+
+(poll q2* 1)
+(xr/check! nil?)
+
+;; Unsubscribing from a channel you're no longer subscribed to is a no-op.
+@(redis [:UNSUBSCRIBE "channel-1"])
+(xr/check! nil?)
+
+;; Subscribing without defining callbacks is not forbidden (but not
+;; particularly useful, either).
+@(redis [:SUBSCRIBE "channel-1" "channel-2"])
+
+@(redis [:PUBLISH "channel-1" "C1"])
+(xr/check! one?)
+
+@(redis [:PUBLISH "channel-2" "C2"])
+(xr/check! one?)
+
+(redis [:UNSUBSCRIBE "channel-1" "channel-2"])
+
+@(redis [:PUBLISH "channel-1" "C1"])
+(xr/check! zero?)
+
+@(redis [:PUBLISH "channel-2" "C2"])
+(xr/check! zero?)
+
+;; :UNSUBSCRIBE without arguments removes all subscriptions.
+(def q5+6 (subscribe "channel-5" "channel-6"))
+
+@(redis [:PUBLISH "channel-5" "C5"])
+(xr/check! one?)
+
+@(redis [:PUBLISH "channel-6" "C6"])
+(xr/check! one?)
+
+(poll q5+6)
+(assert (= "C5" *1))
+
+(poll q5+6)
+(assert (= "C6" *1))
+
+@(redis [:UNSUBSCRIBE])
+
+(.size q5+6)
+(xr/check! zero?)
+
+@(redis [:PUBLISH "channel-5" "C5"])
+(xr/check! zero?)
+
+@(redis [:PUBLISH "channel-6" "C6"])
+(xr/check! zero?)
+
+(def pcq1 (ArrayBlockingQueue. 256))
+
+;; Pattern subscribe
+(defn psubscribe
+  ^BlockingQueue [& patterns]
+  (let [q (ArrayBlockingQueue. 256)
+        cb (fn [{:keys [type data] :as event}]
+             (case type
+               "pmessage" (.offer ^BlockingQueue q (peek data))
+               (.offer pcq1 event)))]
+    (redis (into (with-meta [:PSUBSCRIBE] {:cb cb}) patterns))
+    q))
+
+(def ^BlockingQueue q? (psubscribe "channel-?"))
+(.size q?) ; Nothing in the queue yet.
+
+(poll pcq1)
+(assert (= *1 (push-event "psubscribe" ["channel-?" 1])))
+
+;; Publish an event that matches the pattern.
+@(redis [:PUBLISH "channel-9" "Hello, world!"])
+(xr/check! one?)
+
+;; The event appears in the subscription queue.
+(poll q?)
+(assert (= "Hello, world!" *1))
+
+;; Publish an event that doesn't match the pattern.
+@(redis [:PUBLISH "nope" "Nope!"])
+(xr/check! zero?)
+
+;; The event doesn't appear in the subscription queue.
+(poll q? 1)
+(xr/check! nil?)
+
+;; Unsubscribe from the pattern.
+@(redis [:PUNSUBSCRIBE "channel-?"])
+(poll q? 1)
+(xr/check! nil?)
+
+;; Redis sends Rad an unsubscription confirmation message.
+(poll pcq1)
+(assert (= *1 (push-event "punsubscribe" ["channel-?" 0])))
+
+;; Publish an event that matches the pattern.
+@(redis [:PUBLISH "channel-9" "Hello, world!"])
+(xr/check! zero?)
+
+;; PUNSUBSCRIBE on a channel you're not subscribed to is a no-op.
+@(redis [:PUNSUBSCRIBE "channel-?"])
+(xr/check! nil?)

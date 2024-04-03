@@ -1,0 +1,43 @@
+(set! *warn-on-reflection* true)
+(set! *print-length* nil)
+(set! *print-level* nil)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.api :as rad])
+
+(def redis (rad/client)) #_(redis)
+(xr/on-exit redis)
+
+@(def k (format "rad:stress:%s" (random-uuid)))
+@(def v (apply str (repeatedly 100 #(char (+ 97 (rand-int (- 123 97)))))))
+
+(def n 1000)
+
+(def dataset
+  (slurp "https://data.cityofnewyork.us/api/views/c3uy-2p5r/rows.json?accessType=DOWNLOAD"))
+
+;; Pipeline
+
+(def pipeline
+  [[:DEL k]
+   [:JSON.SET "dataset" :$ dataset]
+   [:SET k v]
+   [:COMMAND :DOCS]
+   [:GET k]
+   [:JSON.GET "dataset"]])
+
+(dotimes [_ n]
+  @(apply redis pipeline))
+
+(require '[rad.dev.test :refer [concurrently]])
+
+(concurrently {}
+  @(apply redis pipeline))
+
+;; No pipeline
+
+(dotimes [_ n]
+  (run! (fn [cmd] @(redis cmd)) pipeline))
+
+(concurrently {}
+  (run! (fn [cmd] @(redis cmd)) pipeline))

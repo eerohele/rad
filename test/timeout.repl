@@ -1,0 +1,49 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+(require '[rad.dev.proxy :as proxy])
+(require '[rad.dev.test :refer [ret-ex]])
+(require '[rad.api :as rad])
+(require '[rad.log :as log])
+
+(log/console-logging! :level :finest)
+
+(import '(java.time Duration))
+
+(def tcp-proxy (proxy/run "localhost" 6379)) #_(tcp-proxy)
+(xr/on-exit tcp-proxy)
+
+(def redis
+  (rad/client
+    :host "localhost"
+    :port 9736
+    :send-timeout (Duration/ofSeconds 1)
+    :sendq-capacity 1)) #_(redis)
+
+(xr/on-exit redis)
+
+;; Smoke test
+@(redis [:PING])
+(assert (= "PONG" *1))
+
+;; Emulate server shutdown
+(tcp-proxy)
+
+;; Send command while server is shut down
+(redis [:BLPOP "none" 2])
+
+;; sendq is at capacity prior to this command
+(redis [:BLPOP "none" 2])
+(ret-ex (redis [:PING]))
+(ex-message *1)
+(assert (= *1 "Send queue congested; aborting"))
+
+#_{:clj-kondo/ignore [:redefined-var]}
+(def tcp-proxy (proxy/run "localhost" 6379)) #_(tcp-proxy)
+(xr/on-exit tcp-proxy)
+
+(Thread/sleep 5000)
+
+;; Ensure we're restored connection
+@(redis [:PING])
+(assert (= "PONG" *1))

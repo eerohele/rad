@@ -1,0 +1,58 @@
+(set! *warn-on-reflection* true)
+
+(require '[cognitect.transcriptor :as xr])
+
+(require '[rad.api :as rad])
+(require '[rad.log :as log])
+
+(import '(java.util.concurrent ArrayBlockingQueue BlockingQueue CompletableFuture CountDownLatch Executors ExecutorService TimeUnit))
+
+(log/console-logging! :level :finest)
+
+(def redis (rad/client :decode rad/bytes->str))
+(xr/on-exit redis) #_(redis)
+
+@(redis [:FLUSHDB])
+
+(def ^ExecutorService executor (Executors/newVirtualThreadPerTaskExecutor))
+(xr/on-exit #(.shutdown executor))
+
+;; Same as before, but with more laps, and without BLPOP.
+#_{:clj-kondo/ignore [:redefined-var]}
+(def n 1000)
+#_{:clj-kondo/ignore [:redefined-var]}
+(def ^CountDownLatch latch (CountDownLatch. 1))
+#_{:clj-kondo/ignore [:redefined-var]}
+(def ^BlockingQueue q (ArrayBlockingQueue. n))
+
+(dotimes [_ n]
+  (.execute ^ExecutorService executor
+    (fn []
+      (let [uuid (str (random-uuid))]
+        (.countDown latch)
+        (.await latch)
+        (.put q [uuid (redis [:PING uuid])])))))
+
+(dotimes [_ n]
+  (let [[expected-uuid ret] (.take q)
+        actual-uuid @ret]
+    (assert (= expected-uuid actual-uuid)
+      (format "(not= %s %s)" expected-uuid actual-uuid))))
+
+;; Ensure that many concurrent requests that yield a large response get the
+;; correct response.
+#_{:clj-kondo/ignore [:redefined-var]}
+(def ^BlockingQueue q (ArrayBlockingQueue. n))
+
+(def command-docs @(redis [:COMMAND :DOCS]))
+
+(dotimes [_ n]
+  (.execute ^ExecutorService executor
+    (fn []
+      (.countDown latch)
+      (.await latch)
+      (.put q (redis [:COMMAND :DOCS])))))
+
+(dotimes [_ n]
+  (let [^CompletableFuture ret (.take q)]
+    (assert (= command-docs (.get ret 15 TimeUnit/SECONDS)))))

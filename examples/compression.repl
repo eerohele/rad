@@ -1,0 +1,95 @@
+;; An example of how to work with compressed data.
+(import '(java.util.zip DeflaterOutputStream InflaterInputStream))
+(import '(java.io ByteArrayInputStream ByteArrayOutputStream InputStreamReader))
+
+;; Make helper functions for compressing and decompressing strings.
+(defn deflate
+  "Given a UTF-8 string, return a byte array containing a the string
+  compressed using the Deflate algorithm."
+  [s]
+  (with-open [output-stream (ByteArrayOutputStream.)]
+    (with-open [deflater-stream (DeflaterOutputStream. output-stream)]
+      (.write deflater-stream (.getBytes s "UTF-8")))
+    (.toByteArray output-stream)))
+
+(defn inflate
+  "Given a byte array containing a UTF-8 string compressed using the Deflate
+  algorithm, return the UTF-8 string."
+  [bytes]
+  (with-open [input-stream (ByteArrayInputStream. bytes)
+              input-stream (InflaterInputStream. input-stream)
+              reader (InputStreamReader. input-stream)]
+    (slurp reader)))
+
+;; Bring in data.json.
+(require '[clojure.repl.deps :as deps])
+
+(binding [*repl* true]
+  (deps/add-lib 'org.clojure/data.json))
+
+(require '[clojure.data.json :as json])
+
+;; Run Rad.
+(require '[rad.api :as rad])
+
+(def redis (rad/client :decode identity)) #_(redis)
+
+;; Download the dataset we're going to compress.
+(def dataset (slurp "https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/1/2/1850-2024/data.json"))
+(def edn (json/read-str dataset))
+
+;; Check that compression works.
+(let [compressed-bytes (deflate dataset)
+      uncompressed-bytes (.getBytes dataset "UTF-8")]
+  (assert (< (alength compressed-bytes) (alength uncompressed-bytes))))
+
+;; Put the compressed dataset into Redis.
+@(redis [:SET "data" (deflate dataset)])
+
+;; Get and uncompress, synchronously.
+(->
+  (redis [:GET "data"])
+  (deref)
+  (inflate)
+  (json/read-str))
+
+(assert (= edn *1))
+
+;; Alternatively
+(let [bs @(redis [:GET "data"])]
+  (with-open [input-stream (ByteArrayInputStream. bs)
+              input-stream (InflaterInputStream. input-stream)
+              reader (InputStreamReader. input-stream)]
+    (json/read reader)))
+
+(assert (= edn *1))
+
+;; Do the same thing, but using CompletableFuture APIs.
+
+;; Until functional interface interop lands in Clojure 1.12.
+(defn as-fn
+  [f]
+  (reify java.util.function.Function
+    (apply [_ arg]
+      (f arg))))
+
+(->
+  (redis [:GET "data"])
+  (.thenApply (as-fn inflate))
+  (.thenApply (as-fn json/read-str))
+  (.get))
+
+(assert (= edn *1))
+
+;; Alternatively, inflate and parse JSON asynchronously.
+;;
+;; (I'm sure this isn't very useful at all in this case.)
+(import '(java.util.concurrent Executors))
+
+(def executor (Executors/newVirtualThreadPerTaskExecutor))
+
+(->
+  (redis [:GET "data"])
+  (.thenApplyAsync (as-fn inflate) executor)
+  (.thenApplyAsync (as-fn json/read-str) executor)
+  (.get))
