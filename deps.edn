@@ -8,4 +8,7 @@
                    :exec-fn codox.main/generate-docs
                    :exec-args {:source-paths ["src"]
                                :doc-paths []
-                               :output-path "doc/api"}}}}
+                               :output-path "doc/api"}}
+
+           :build {:deps {com.github.liquidz/build.edn {:mvn/version "0.11.257"}}
+                   :ns-default build-edn.main}}}

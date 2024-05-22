@@ -1,0 +1,2 @@
+{:lib me.flowthing/rad
+ :version "{{now/yyyy}}-{{now/mm}}-{{now/dd}}.{{git/commit-count}}-alpha"}
