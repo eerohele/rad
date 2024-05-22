@@ -1,4 +1,4 @@
-# Rād
+# Rād [![Clojars Project](https://img.shields.io/clojars/v/me.flowthing/rad.svg)](https://clojars.org/me.flowthing/rad)
 
 Rād «ᚱ» is a small, zero-dependency Redis client for Clojure (JDK 21+).
 
