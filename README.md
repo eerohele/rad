@@ -33,6 +33,8 @@ nil
 
 See [documentation](doc/INDEX.md) and [API documentation](https://eerohele.github.io/rad).
 
+If you want to know how Rad works, see also the [architecture documentation](doc/ARCHITECTURE.md).
+
 ## Examples
 
 See [`examples`](examples).
