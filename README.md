@@ -2,6 +2,9 @@
 
 Rād «ᚱ» is a small, zero-dependency Redis client for Clojure (JDK 21+).
 
+> [!CAUTION]
+> Rad is alpha-quality software. While the API proper (the `rad.api` namespace) is unlikely to change, the logging implementation (`rad.log`) very well might.
+
 ## Quick start
 
 ```clojure
