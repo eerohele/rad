@@ -64,19 +64,11 @@
 
 (assert (= edn *1))
 
-;; Do the same thing, but using CompletableFuture APIs.
-
-;; Until functional interface interop lands in Clojure 1.12.
-(defn as-fn
-  [f]
-  (reify java.util.function.Function
-    (apply [_ arg]
-      (f arg))))
-
+;; Presuming Clojure 1.12.0-alpha12 or newer.
 (->
   (redis [:GET "data"])
-  (.thenApply (as-fn inflate))
-  (.thenApply (as-fn json/read-str))
+  (.thenApply inflate)
+  (.thenApply json/read-str)
   (.get))
 
 (assert (= edn *1))
@@ -90,6 +82,6 @@
 
 (->
   (redis [:GET "data"])
-  (.thenApplyAsync (as-fn inflate) executor)
-  (.thenApplyAsync (as-fn json/read-str) executor)
+  (.thenApplyAsync inflate executor)
+  (.thenApplyAsync json/read-str executor)
   (.get))

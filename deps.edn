@@ -1,5 +1,5 @@
 {:aliases {:dev {:extra-paths ["dev/src"]
-                 :extra-deps {org.clojure/clojure {:mvn/version "1.12.0-alpha11"}
+                 :extra-deps {org.clojure/clojure {:mvn/version "1.12.0-alpha12"}
                               com.cognitect/transcriptor {:mvn/version "0.1.5"}
                               criterium/criterium {:mvn/version "0.4.6"}
                               org.clojure/test.check {:mvn/version "1.1.1"}}}

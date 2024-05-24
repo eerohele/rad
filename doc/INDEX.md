@@ -100,16 +100,11 @@ You can [`deref`](https://clojure.github.io/clojure/clojure.core-api.html#clojur
 Or, if you need to, you can take advantage of the CompletableFuture API:
 
 ```clojure
-;; Until functional interface interop lands in Clojure 1.12.
-user=> (defn as-fn
-         [f]
-         (reify java.util.function.Function
-           (apply [_ arg]
-             (f arg))))
-#'user/as-fn
+;; (Presuming Clojure 1.12.0-alpha12 or newer for functional interface interop.)
+;;
 ;; Have Redis increment a number, then Clojure -- asynchronously, of course,
 ;; because that's extremely useful.
-user=> (-> (redis [:INCR "n"]) (.thenApplyAsync (as-fn inc)) (.get))
+user=> (-> (redis [:INCR "n"]) (.thenApplyAsync inc) (.get))
 2
 ```
 
