@@ -1,0 +1,42 @@
+;; An example of how to use Rad with Deed[1].
+;;
+;; [1]: https://github.com/igrishaev/deed
+(import '(java.io ByteArrayOutputStream))
+
+(require '[clojure.spec.alpha :as spec])
+(require '[clojure.repl.deps :as deps])
+
+(spec/check-asserts true)
+
+;; Presuming Clojure 1.12 or newer.
+(deps/add-lib 'com.github.igrishaev/deed-core)
+(require '[deed.core :as deed])
+
+;; Decode a byte array of Deed data.
+(defn decode
+  [ba]
+  (deed/decode-from ba))
+
+;; Encode a value as Deed and write it into a byte array.
+(defn encode
+  [x]
+  (with-open [out (ByteArrayOutputStream.)]
+    (deed/encode-to x out)
+    (.toByteArray out)))
+
+;; Try round-tripping to make sure everything works OK.
+(-> {:a 1} encode decode)
+(assert (= *1 {:a 1}))
+
+;; Make a Redis client.
+(require '[rad.api :as rad])
+(def redis (rad/client))
+
+;; Set "a" to a Deed-encoded value.
+@(redis [:SET "a" (encode {:b 2})])
+
+;; Decode the Transit-encoded value in "a".
+(decode @(redis [:GET "a"]))
+
+;; Check that it's what we expected.
+(assert (= *1 {:b 2}))
