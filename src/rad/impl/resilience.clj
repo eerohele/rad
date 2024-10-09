@@ -6,13 +6,13 @@
   (:import (java.time Duration)
            (java.util.concurrent ThreadLocalRandom)))
 
-(defn calculate-delay-ms
+(defn calculate-delay
   ^Duration [base-delay-ms cap-ms attempt]
   (let [delay-ms (min cap-ms (* base-delay-ms (math/pow attempt 2)))
         jitter-ms (.nextDouble (ThreadLocalRandom/current) 0 (* delay-ms 0.1))]
     (Duration/ofMillis (+ delay-ms jitter-ms))))
 
-(comment (calculate-delay-ms 100 10000 10) ,,,)
+(comment (calculate-delay 100 10000 10) ,,,)
 
 (defn sleep
   [^Duration duration]
@@ -52,7 +52,7 @@
 
              :else
              (let [attempt# (inc attempt#)
-                   delay-ms# (calculate-delay-ms ~base-delay-ms ~cap-ms attempt#)]
+                   delay-ms# (calculate-delay ~base-delay-ms ~cap-ms attempt#)]
                (log :info :retry {:attempt attempt# :delay-ms (.toMillis delay-ms#)})
                (sleep delay-ms#)
                (recur attempt#)))
