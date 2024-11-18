@@ -294,10 +294,10 @@
                 (if (anomaly/retryable? ex)
                   (do
                     (conn/try-restore conn)
+                    (assert (zero? (.size suspq)))
                     ;; If we successfully reconnected to the Redis server,
                     ;; signal to the writer that it is OK to continue writing
                     ;; to the socket.
-                    (assert (zero? (.size suspq)))
                     (.put suspq ::ok))
                   ;; If the error we encounter is not retryable, tell the
                   ;; writer to abort, then rethrow.
@@ -313,7 +313,7 @@
             (let [commands (.take sendq)]
               (run!
                 (fn [cmdvec]
-                  ;; If the reader receives an end of stream it shuts down
+                  ;; If the reader receives an end of stream, it shuts down
                   ;; the socket output.
                   ;;
                   ;; This way, the writer won't attempt to write into a dead
@@ -386,7 +386,7 @@
                           (loop [responses [] n 0]
                             (cond
                               (= n cmd-count)
-                              ;; If the requests consists of a single command,
+                              ;; If the request consists of a single command,
                               ;; unwrap the response to that command from the
                               ;; response vector.
                               (cond-> responses (= 1 cmd-count) peek)
