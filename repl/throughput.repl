@@ -7,6 +7,9 @@
 
 (import '(java.lang AutoCloseable))
 
+(require '[clojure.spec.alpha :as spec])
+(spec/check-asserts false)
+
 ;; Deps
 (require '[clojure.repl.deps :as deps])
 
