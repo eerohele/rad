@@ -77,11 +77,7 @@
     (.write out prefix)
     (write-num out len)
     (write-etb out)
-
-    (loop [n 0]
-      (when (< n len)
-        (write (nth this n) out)
-        (recur (inc n))))))
+    (run! (fn [item] (write item out)) this)))
 
 (extend-protocol Writable
   nil
