@@ -195,23 +195,20 @@
 
 (defn ^:private read-number
   ^long [^InputStream in]
-  (let [sb (StringBuilder.)]
-    (loop []
-      (let [b (.read in)]
-        (case b
-          -1 (eos!)
+  (loop [n 0 sign 1]
+    (let [b (.read in)]
+      (case b
+        -1 (eos!)
 
-          13
-          (do
-            (.skipNBytes in 1)
-            (let [^String s (.toString sb)]
-              (if (not (.isBlank s))
-                (parse-long s)
-                (anomaly! "Expected number, got nothing" ::anomalies/fault))))
+        ;; Minus sign
+        45 (recur n -1)
 
-          (do
-            (.append sb (char b))
-            (recur)))))))
+        13
+        (do
+          (.skipNBytes in 1)
+          (* sign n))
+
+        (recur (+ (* 10 n) (- b 48)) sign)))))
 
 (defn ^:private read-big-number
   [^InputStream in]
