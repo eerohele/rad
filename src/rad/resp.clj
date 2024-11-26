@@ -27,10 +27,10 @@
   ^String [^bytes bs]
   (String. bs StandardCharsets/UTF_8))
 
-(defn ^:private str->bytes
+(defmacro ^:private str->bytes
   "Given a string, return the UTF-8 bytes of the string."
   ^bytes [^String s]
-  (.getBytes s StandardCharsets/UTF_8))
+  `(.getBytes ~s StandardCharsets/UTF_8))
 
 (defn ^:private write-etb
   [^OutputStream out]
