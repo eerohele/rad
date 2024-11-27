@@ -211,43 +211,44 @@
         (recur (+ (* 10 n) (- b 48)) sign)))))
 
 (defn ^:private read-big-number
-  [^InputStream in]
-  (let [sb (StringBuilder.)]
-    (loop []
-      (let [b (.read in)]
-        (case b
-          -1 (eos!)
+  [^StringBuilder sb ^InputStream in]
+  (loop []
+    (let [b (.read in)]
+      (case b
+        -1 (eos!)
 
-          13
-          (do
-            (.skipNBytes in 1) #_\newline
-            (bigint (str sb)))
+        13
+        (do
+          (.skipNBytes in 1) #_\newline
+          (let [n (bigint (str sb))]
+            (.setLength sb 0)
+            n))
 
-          (do
-            (.append sb (char b))
-            (recur)))))))
+        (do
+          (.append sb (char b))
+          (recur))))))
 
 (defn ^:private read-double
-  [^InputStream in]
-  (let [sb (StringBuilder.)]
-    (loop []
-      (let [b (.read in)]
-        (case b
-          -1 (eos!)
+  [^StringBuilder sb ^InputStream in]
+  (loop []
+    (let [b (.read in)]
+      (case b
+        -1 (eos!)
 
-          13
-          (do
-            (.skipNBytes in 1) #_\newline
-            (let [s (str sb)]
-              (case s
-                "nan" ##NaN
-                "inf" ##Inf
-                "-inf" ##-Inf
-                (parse-double s))))
+        13
+        (do
+          (.skipNBytes in 1) #_\newline
+          (let [s (str sb)]
+            (.setLength sb 0)
+            (case s
+              "nan" ##NaN
+              "inf" ##Inf
+              "-inf" ##-Inf
+              (parse-double s))))
 
-          (do
-            (.append sb (char b))
-            (recur)))))))
+        (do
+          (.append sb (char b))
+          (recur))))))
 
 (defn ^:private read-array
   [^InputStream in decode]
@@ -285,25 +286,26 @@
   ,,,)
 
 (defn ^:private read-simple-string
-  [^InputStream in]
-  (let [sb (StringBuilder.)]
-    (loop []
-      (let [n (.read in)]
-        (case n
-          1 (eos!)
+  [^StringBuilder sb ^InputStream in]
+  (loop []
+    (let [n (.read in)]
+      (case n
+        1 (eos!)
 
-          13
-          (do
-            (.skipNBytes in 1) ; \newline
-            (str sb))
+        13
+        (do
+          (.skipNBytes in 1) ; \newline
+          (let [s (str sb)]
+            (.setLength sb 0)
+            s))
 
-          (do
-            (.append sb (char n))
-            (recur)))))))
+        (do
+          (.append sb (char n))
+          (recur))))))
 
 (defn ^:private read-simple-error
-  [^InputStream in]
-  (ex-info (read-simple-string in) {}))
+  [sb ^InputStream in]
+  (ex-info (read-simple-string sb in) {}))
 
 (defn ^:private read-null
   [^InputStream in]
@@ -429,8 +431,9 @@
 
 (defn read
   "Read a RESP3 type from a java.io.InputStream."
-  ([in] (read in identity))
-  ([^InputStream in decode]
+  ([in] (read (StringBuilder.) in identity))
+  ([in decode] (read (StringBuilder.) in decode))
+  ([sb ^InputStream in decode]
    (let [type (.read in)]
      (case type
        -1 (eos!)
@@ -438,11 +441,11 @@
        35 (read-boolean in)
        36 (read-blob-string in decode)
        37 (read-map in decode)
-       40 (read-big-number in)
+       40 (read-big-number sb in)
        42 (read-array in decode)
-       43 (read-simple-string in)
-       44 (read-double in)
-       45 (read-simple-error in)
+       43 (read-simple-string sb in)
+       44 (read-double sb in)
+       45 (read-simple-error sb in)
        58 (read-number in)
        61 (read-verbatim-string in decode)
        62 (read-push-event in decode)

@@ -208,6 +208,8 @@
 
 (xr/check! pass?)
 
+(comment (-> *1 :shrunk :smallest first) ,,,)
+
 ;; Writing simple strings and errors doesn't seem very useful. So, until Rad
 ;; doesn't know how to write them, we'll just check that reading them works.
 
