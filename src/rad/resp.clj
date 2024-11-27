@@ -14,8 +14,7 @@
             [rad.impl.anomaly :refer [anomaly!]])
   (:import (clojure.lang BigInt Sequential Named IPersistentMap IPersistentSet)
            (java.io ByteArrayInputStream ByteArrayOutputStream InputStream OutputStream)
-           (java.nio.charset StandardCharsets)
-           (java.util HashMap HashSet)))
+           (java.nio.charset StandardCharsets)))
 
 (set! *unchecked-math* :warn-on-boxed)
 (set! *warn-on-reflection* true)
@@ -252,14 +251,12 @@
 
 (defn ^:private read-array
   [^InputStream in decode]
-  (let [len (read-number in)
-        ^objects ary (make-array Object len)]
-    (loop [idx 0]
-      (when (< idx len)
+  (let [len (read-number in)]
+    (loop [idx 0 ary (transient [])]
+      (if (< idx len)
         (let [x (read in decode)]
-          (aset ary idx x))
-        (recur (inc idx))))
-    (vec ary)))
+          (recur (inc idx) (conj! ary x)))
+        (persistent! ary)))))
 
 (defn ^:private read-blob-string
   ([in decode] (read-blob-string in (read-number in) decode))
@@ -330,26 +327,22 @@
 (defn ^:private read-map
   "https://github.com/redis/redis-specifications/blob/master/protocol/RESP3.md#map-type"
   [^InputStream in decode]
-  (let [len (read-number in)
-        m (HashMap. len)]
-    (loop [n 0]
-      (if (= n len)
-        (into {} m)
+  (let [len (read-number in)]
+    (loop [n 0 m (transient {})]
+      (if (< n len)
         (let [k (read in decode)
               v (read in decode)]
-          (.put m k v)
-          (recur (inc n)))))))
+          (recur (inc n) (assoc! m k v)))
+        (persistent! m)))))
 
 (defn ^:private read-set
   [^InputStream in decode]
-  (let [len (read-number in)
-        s (HashSet. len)]
-    (loop [n 0]
-      (when (< n len)
+  (let [len (read-number in)]
+    (loop [n 0 s (transient #{})]
+      (if (< n len)
         (let [x (read in decode)]
-          (.add s x))
-        (recur (inc n))))
-    (set s)))
+          (recur (inc n) (conj! s x)))
+        (persistent! s)))))
 
 (comment
   (read-string "~5\r\n+orange\r\n+apple\r\n#t\r\n:100\r\n:999\r\n")
