@@ -76,21 +76,23 @@
 
 "Rad"
 (quick-bench
-  (.join ^CompletableFuture
-    (redis
-      [:DEL k]
-      [:SET k v]
-      [:GET k])))
+  (dotimes [_ 100]
+    (.join ^CompletableFuture
+      (redis
+        [:DEL k]
+        [:SET k v]
+        [:GET k]))))
 
 (quick-bench
   @(redis [:COMMAND :DOCS]))
 
 "Carmine"
 (quick-bench
-  (wcar {:pool my-pool}
-    (car/del k)
-    (car/set k v)
-    (car/get k)))
+  (dotimes [_ 100]
+    (wcar {:pool my-pool}
+      (car/del k)
+      (car/set k v)
+      (car/get k))))
 
 (quick-bench
   (wcar {:pool my-pool}
@@ -98,15 +100,16 @@
 
 "Jedis"
 (quick-bench
-  (with-open [^Pipeline pipeline (.pipelined jedis-pool)]
-    (.del pipeline ^String k)
-    (.set pipeline ^String k ^String v)
-    (.get pipeline ^String k)
-    (.syncAndReturnAll pipeline)))
+  (dotimes [_ 100]
+    (with-open [^Pipeline pipeline (.pipelined jedis-pool)]
+      (.del pipeline ^String k)
+      (.set pipeline ^String k ^String v)
+      (.get pipeline ^String k)
+      (.syncAndReturnAll pipeline))))
 
 "Lettuce"
 (quick-bench
-  (do
+  (dotimes [_ 100]
     #_(.setAutoFlushCommands lettuce-connection false)
     (.del lettuce-cmd (into-array String [k]))
     (.set lettuce-cmd k v)
