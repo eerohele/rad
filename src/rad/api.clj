@@ -26,7 +26,8 @@
   (String. bs StandardCharsets/UTF_8))
 
 (defmacro ^:private until-interruption
-  "Given a body, execute the body until the current thread is interrupted."
+  "Given a body, execute the body in a loop until the current thread is
+  interrupted."
   [& body]
   `(while (not (.isInterrupted (Thread/currentThread)))
      (do ~@body)))
