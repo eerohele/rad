@@ -6,6 +6,8 @@
   (:import (java.time Duration)
            (java.util.concurrent ThreadLocalRandom)))
 
+(set! *warn-on-reflection* true)
+
 (defn calculate-delay
   ^Duration [base-delay-ms cap-ms attempt]
   (let [delay-ms (min cap-ms (* base-delay-ms (math/pow attempt 2)))

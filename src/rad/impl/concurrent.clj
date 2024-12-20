@@ -4,6 +4,8 @@
   (:import (java.util.concurrent CompletableFuture ThreadFactory)
            (java.util.function Supplier)))
 
+(set! *warn-on-reflection* true)
+
 (def ^:private logging-exception-handler
   (reify Thread$UncaughtExceptionHandler
     (uncaughtException [_ thread ex]
