@@ -327,11 +327,11 @@
                   (when (conn/output-shutdown? conn)
                     ;; Wait for the reader's signal that it is OK to
                     ;; proceed writing.
-                    ;;
-                    ;; If the reader sends an ::abort, stop writing.
-                    (when (identical? ::abort (.take suspq))
-                      (anomaly! (format "Unable to connect to Redis server (%s:%d)" host port)
-                        ::anomalies/unavailable)))
+                    (let [signal (.take suspq)]
+                      ;; If the reader sends an ::abort, stop writing.
+                      (when (identical? ::abort signal)
+                        (anomaly! (format "Unable to connect to Redis server (%s:%d)" host port)
+                          ::anomalies/unavailable))))
 
                   (try
                     (resp/write (mapv serialize cmdvec) (conn/output conn))
