@@ -287,7 +287,7 @@
   (loop []
     (let [n (.read in)]
       (case n
-        1 (eos!)
+        -1 (eos!)
 
         13
         (do
