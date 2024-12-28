@@ -250,11 +250,11 @@
           (recur))))))
 
 (defn ^:private read-array
-  [^InputStream in decode]
+  [sb ^InputStream in decode]
   (let [len (read-number in)]
     (loop [idx 0 ary (transient [])]
       (if (< idx len)
-        (let [x (read in decode)]
+        (let [x (read sb in decode)]
           (recur (inc idx) (conj! ary x)))
         (persistent! ary)))))
 
@@ -326,21 +326,21 @@
 
 (defn ^:private read-map
   "https://github.com/redis/redis-specifications/blob/master/protocol/RESP3.md#map-type"
-  [^InputStream in decode]
+  [sb ^InputStream in decode]
   (let [len (read-number in)]
     (loop [n 0 m (transient {})]
       (if (< n len)
-        (let [k (read in decode)
-              v (read in decode)]
+        (let [k (read sb in decode)
+              v (read sb in decode)]
           (recur (inc n) (assoc! m k v)))
         (persistent! m)))))
 
 (defn ^:private read-set
-  [^InputStream in decode]
+  [sb ^InputStream in decode]
   (let [len (read-number in)]
     (loop [n 0 s (transient #{})]
       (if (< n len)
-        (let [x (read in decode)]
+        (let [x (read sb in decode)]
           (recur (inc n) (conj! s x)))
         (persistent! s)))))
 
@@ -353,9 +353,9 @@
   (instance? clojure.lang.IMeta x))
 
 (defn ^:private read-attribute
-  [^InputStream in decode]
-  (let [m (read-map in decode)
-        x (read in decode)]
+  [sb ^InputStream in decode]
+  (let [m (read-map sb in decode)
+        x (read sb in decode)]
     ;; Ignore attributes if x can't hold meta.
     (cond-> x (meta? x) (with-meta m))))
 
@@ -388,8 +388,8 @@
   ,,,)
 
 (defn ^:private read-push-event
-  [in decode]
-  (let [v (read-array in identity)
+  [sb in decode]
+  (let [v (read-array sb in identity)
         ;; Regardless of how the user wants do decode byte arrays, we always
         ;; want to decode push event types as strings.
         ;;
@@ -433,18 +433,18 @@
        33 (read-blob-error in)
        35 (read-boolean in)
        36 (read-blob-string in decode)
-       37 (read-map in decode)
+       37 (read-map sb in decode)
        40 (read-big-number sb in)
-       42 (read-array in decode)
+       42 (read-array sb in decode)
        43 (read-simple-string sb in)
        44 (read-double sb in)
        45 (read-simple-error sb in)
        58 (read-number in)
        61 (read-verbatim-string in decode)
-       62 (read-push-event in decode)
+       62 (read-push-event sb in decode)
        95 (read-null in)
-       124 (read-attribute in decode)
-       126 (read-set in decode)
+       124 (read-attribute sb in decode)
+       126 (read-set sb in decode)
        ;; TODO:
        ;; - https://github.com/redis/redis-specifications/blob/master/protocol/RESP3.md#streamed-strings
        ;; - https://github.com/redis/redis-specifications/blob/master/protocol/RESP3.md#streamed-aggregated-data-types
