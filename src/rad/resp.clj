@@ -169,7 +169,7 @@
 
   PushEvent
   (write [this out]
-    (let [xs (concat [(:type this)] (:data this))]
+    (let [xs (into [(:type this)] (:data this))]
       (write-coll out 62 #_\> xs)))
 
   Object
